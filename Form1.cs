@@ -624,53 +624,6 @@ namespace citacop
         }
 
 
-        private List<Color> KMeansClusterOld(List<Color> pixels, int clusterCount)
-        {
-            HashSet<Color> centers = new HashSet<Color>(pixels.Distinct().Take(clusterCount)); // Tekrar eden renkleri engelle
-            bool changes = true;
-
-            while (changes)
-            {
-                Dictionary<Color, List<Color>> clusters = centers.ToDictionary(c => c, c => new List<Color>());
-                foreach (var pixel in pixels)
-                {
-                    Color closest = centers.OrderBy(c => ColorDistance(pixel, c)).First();
-                    clusters[closest].Add(pixel);
-                }
-
-                changes = false;
-                HashSet<Color> newCenters = new HashSet<Color>();
-
-                foreach (var cluster in clusters)
-                {
-                    if (cluster.Value.Count > 0)
-                    {
-                        // Ortalama hesapla
-                        int r = (int)cluster.Value.Average(c => c.R);
-                        int g = (int)cluster.Value.Average(c => c.G);
-                        int b = (int)cluster.Value.Average(c => c.B);
-                        Color newCenter = Color.FromArgb(r, g, b);
-
-                        //  Amiga paletinden en yakın rengi bul
-                        Color closestAmigaColor = FindClosestAmigaColor(newCenter);
-
-                        if (!newCenters.Contains(closestAmigaColor)) // Aynı rengi iki kez eklemeyi engelle
-                        {
-                            newCenters.Add(closestAmigaColor);
-                            if (!centers.Contains(closestAmigaColor)) changes = true;
-                        }
-                    }
-                    else
-                    {
-                        newCenters.Add(cluster.Key); // Boş küme olursa eski merkezi koru
-                    }
-                }
-
-                centers = newCenters;
-            }
-
-            return centers.ToList();
-        }
 
         private Color FindClosestColor(Color input, List<Color> palette)
         {
@@ -1450,72 +1403,6 @@ namespace citacop
         }
 
 
-
-        private void Crop2(int newWidth, int newHeight)
-        {
-            if (pictureBox1.Image == null)
-            {
-                UpdateLabel("Load an image first!");
-                return;
-            }
-
-            Bitmap originalImage = new Bitmap(pictureBox1.Image);
-            int originalWidth = originalImage.Width;
-            int originalHeight = originalImage.Height;
-
-            // Ensure the crop size is valid
-            if (newWidth <= 0 || newHeight <= 0 || newWidth > originalWidth || newHeight > originalHeight)
-            {
-                UpdateLabel("Invalid crop size!");
-                return;
-            }
-
-            // Determine crop position based on comboBox1 selection
-            int x = 0, y = 0;
-            string selectedPosition = comboBox1.SelectedItem?.ToString() ?? "Center";
-
-            switch (selectedPosition)
-            {
-                case "Top Left":
-                    x = 0; y = 0;
-                    break;
-                case "Top":
-                    x = (originalWidth - newWidth) / 2; y = 0;
-                    break;
-                case "Top Right":
-                    x = originalWidth - newWidth; y = 0;
-                    break;
-                case "Right":
-                    x = originalWidth - newWidth; y = (originalHeight - newHeight) / 2;
-                    break;
-                case "Bottom Right":
-                    x = originalWidth - newWidth; y = originalHeight - newHeight;
-                    break;
-                case "Bottom":
-                    x = (originalWidth - newWidth) / 2; y = originalHeight - newHeight;
-                    break;
-                case "Bottom Left":
-                    x = 0; y = originalHeight - newHeight;
-                    break;
-                case "Left":
-                    x = 0; y = (originalHeight - newHeight) / 2;
-                    break;
-                case "Center":
-                default:
-                    x = (originalWidth - newWidth) / 2;
-                    y = (originalHeight - newHeight) / 2;
-                    break;
-            }
-
-            // Crop the selected region
-            Rectangle cropArea = new Rectangle(x, y, newWidth, newHeight);
-            Bitmap croppedImage = originalImage.Clone(cropArea, originalImage.PixelFormat);
-
-            // Assign cropped image to PictureBox
-            pictureBox1.Image = croppedImage;
-            displaySetup();
-            UpdateLabel($"Cropped to: {newWidth}x{newHeight} at {selectedPosition}");
-        }
 
 
         private void displaySetup(bool auto = false)
