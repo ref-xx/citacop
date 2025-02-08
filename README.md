@@ -31,7 +31,7 @@ Windows (built with .NET Framework/Windows Forms)
 - Developers and hobbyists experimenting with color quantization and dithering techniques.  
 
 ## Installation  
-1. Download the latest release from the **[Releases](#)** section.  
+1. Download the latest release from the **Releases** section.  
 2. Extract the archive and run `Citacop.exe`.  
 
 ## Contributing  
