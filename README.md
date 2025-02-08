@@ -7,6 +7,9 @@ A simple tool to do the actual work.
 Citacop is written for OCS Systems. Deluxe Paint, Personal Paint, Amos, and other OCS/ESC image viewers will love your exported image files. :D  
 Citacop exports highly compatible, uncompressed raw ILBM.
 
+Supports Amiga Low-Res, Med-Res and Laced saving. Aspect ratio compansation when previewing Med-res images. 
+2 to 32 Colors are supported. EHB and HAM modes are NOT supported.
+
 ## Features  
 - 🖼️ **Color Quantization**: Reduce the color depth of images to a specified number of colors.  
 - 🎨 **Amigafy an Image**: Generate Amiga palettes and apply them to your image to constrain colors to 4096 Amiga colors (this is not Amiga-compatible, of course—it’s for an authentic Amiga 500 look).  
