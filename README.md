@@ -48,4 +48,5 @@ Windows (built with .NET Framework/Windows Forms)
 Contributions are welcome! Feel free to submit issues, feature requests, or pull requests to improve Citacop.  
 
 ## Screenshot  
-![Citacop Screenshot](https://github.com/user-attachments/assets/1dd810da-c7d3-4efb-9321-f0dc72106b86)  
+![Citacop Screenshot 2](https://github.com/user-attachments/assets/38b5a6c2-cc0b-491d-bf61-49217b1484cc)
+
