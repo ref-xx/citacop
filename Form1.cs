@@ -8,6 +8,8 @@ using System.Linq;
 using System.Text;
 using System.Windows.Forms;
 
+
+
 namespace citacop
 {
     public partial class Form1 : Form
@@ -25,13 +27,14 @@ namespace citacop
         bool integerscale = false;
         int scalew = 320;
         int scaleh = 256;
-        int colorcount = 16;
+
         string lastfile = "";
         private float imageAspectRatio = 1.0f;
 
         private bool isDragging = false;
         private Point dragStartPoint;
 
+        private bool isPaletteLocked = false;
 
         private float zoomFactor = 1.0f;
         private const float zoomStep = 0.1f; // How much to zoom in/out per step
@@ -46,29 +49,7 @@ namespace citacop
                     amigaPaletteList.Add(amigaPaletteArray[i, j]);
         }
 
-        // Optimized FindClosestAmigaColor
-        private Color FindClosestAmigaColorFast(Color inputColor)
-        {
 
-            Color bestMatch = Color.Black;
-            int minDistance = int.MaxValue;
-
-            Parallel.ForEach(amigaPaletteList, amigaColor =>
-            {
-                int distance =
-                    (inputColor.R - amigaColor.R) * (inputColor.R - amigaColor.R) +
-                    (inputColor.G - amigaColor.G) * (inputColor.G - amigaColor.G) +
-                    (inputColor.B - amigaColor.B) * (inputColor.B - amigaColor.B);
-
-                if (distance < minDistance)
-                {
-                    minDistance = distance;
-                    bestMatch = amigaColor;
-                }
-            });
-
-            return bestMatch;
-        }
 
 
         public Form1()
@@ -201,7 +182,7 @@ namespace citacop
 
                     if (extension == ".iff")
                     {
-                        int bitplanes = (reducedPalette.Count() > 16) ? 5 : 4; // 16 renk için 4 bit, 32 renk için 5 bit
+                        int bitplanes = (int)Math.Ceiling(Math.Log2(reducedPalette.Count));  // 16 renk için 4 bit, 32 renk için 5 bit
                         SaveAsILBM(new Bitmap(pictureBox1.Image), saveFileDialog.FileName, reducedPalette, bitplanes, false);
                         UpdateLabel($"Saved as: {saveFileDialog.FileName}");
                         return;
@@ -268,42 +249,55 @@ namespace citacop
         {
             groupBox1.Visible = false;
         }
-
-
         private void Quantize(Bitmap sourceImage)
         {
-            int totalPixels = sourceImage.Width * sourceImage.Height;
+            int width = sourceImage.Width;
+            int height = sourceImage.Height;
+            int totalPixels = width * height;
             int processedPixels = 0;
-            Bitmap result = new Bitmap(sourceImage.Width, sourceImage.Height);
 
-            for (int y = 0; y < sourceImage.Height; y++)
+            Bitmap result = new Bitmap(width, height);
+
+            for (int y = 0; y < height; y++)
             {
-
-                for (int x = 0; x < sourceImage.Width; x++)
+                for (int x = 0; x < width; x++)
                 {
                     Color originalColor = sourceImage.GetPixel(x, y);
-                    Color closestColor = FindClosestAmigaColorFast(originalColor);
-                    result.SetPixel(x, y, closestColor);
-                    processedPixels++;
 
+                    // Extract the 4-bit Amiga equivalent
+                    int amigaR = (originalColor.R / 16); // 4-bit (0-15)
+                    int amigaG = (originalColor.G / 16);
+                    int amigaB = (originalColor.B / 16);
+
+                    // Expand to 8-bit using (x << 4) | x
+                    int fixedR = (amigaR << 4) | amigaR; // Ensures F0 → FF, A0 → AA
+                    int fixedG = (amigaG << 4) | amigaG;
+                    int fixedB = (amigaB << 4) | amigaB;
+
+                    Color amigaColor = Color.FromArgb(originalColor.A, fixedR, fixedG, fixedB);
+                    result.SetPixel(x, y, amigaColor);
+
+                    processedPixels++;
                 }
-                // İşlem yüzdesini güncelle (UI Thread kullanarak)
+
+                // Update progress (UI thread)
                 int progress = (processedPixels * 100) / totalPixels;
                 UpdateLabel($"Progress %{progress}");
-                if (isQuantizing == false)
-                { //abort requested
+                if (!isQuantizing)
+                {
                     UpdateLabel($"ABORTED!", Color.Red);
                     return;
                 }
             }
 
-            // İşlem tamamlandığında resmi güncelle
+            // Update the final image
             UpdatePictureBox(result);
             UpdateLabel("Done!");
             isQuantizing = false;
             pictureBox1.Invoke(new Action(() => button2.Visible = false));
-
         }
+
+
 
         private void StopQuantization()
         {
@@ -328,22 +322,24 @@ namespace citacop
             // Görüntüdeki tüm pikselleri topla
             for (int y = 0; y < image.Height; y++)
             {
-                UpdateLabel("Building histograms... " + y.ToString());
+                UpdateLabel("Building pixel list... " + y.ToString());
                 for (int x = 0; x < image.Width; x++)
                 {
                     pixels.Add(image.GetPixel(x, y));
                 }
             }
-
-            // K-Means ile en iyi renkleri belirle
+            /*
+            OctreeQuantizer quantizer = new OctreeQuantizer(colorCount, UpdateLabel);
+            List<Color> npalette = quantizer.Quantize(pixels);
+            UpdateLabel("Palette Ready");
+            return npalette; */
             return KMeansCluster(pixels, colorCount);
         }
-        private Bitmap ReduceColors(Bitmap image, int colorCount = 32)
+        private Bitmap ReduceColors(Bitmap image)
         {
-            reducedPalette = getReducedPalette(image, colorCount);
 
             //Eksik renkleri siyahla doldur (2, 4, 8, 16 veya 32'ye tamamla)
-            int[] validColorCounts = { 2, 4, 8, 16, 32 };
+            int[] validColorCounts = { 2, 4, 8, 16, 32, 64 };
             int targetColors = validColorCounts.First(n => n >= reducedPalette.Count);
 
             while (reducedPalette.Count < targetColors)
@@ -359,7 +355,8 @@ namespace citacop
                 for (int x = 0; x < image.Width; x++)
                 {
                     Color originalColor = image.GetPixel(x, y);
-                    Color closestColor = FindClosestColor(originalColor, reducedPalette);
+                    Color closestColor = FindClosestColorInList(originalColor, reducedPalette);
+                    closestColor = Color.FromArgb(originalColor.A, closestColor.R, closestColor.G, closestColor.B);
                     quantizedImage.SetPixel(x, y, closestColor);
                 }
             }
@@ -367,20 +364,18 @@ namespace citacop
             return quantizedImage;
         }
 
-        private Bitmap ReduceColorsWithDithering(Bitmap image, int colorCount = 32)
+        private Bitmap ReduceColorsWithDithering(Bitmap image)
         {
             int width = image.Width;
             int height = image.Height;
-
-            reducedPalette = getReducedPalette(image, colorCount);
 
             Bitmap ditheredImage = new Bitmap(width, height);
 
             // Floyd-Steinberg Error Diffusion Weights
             double[][] errorDiffusion = {
-        new double[] { 0, 0, 7.0 / 16 },
-        new double[] { 3.0 / 16, 5.0 / 16, 1.0 / 16 }
-    };
+                new double[] { 0, 0, 7.0 / 16 },
+                new double[] { 3.0 / 16, 5.0 / 16, 1.0 / 16 }
+            };
 
             // Convert image to array for processing
             Color[,] imageData = new Color[width, height];
@@ -399,7 +394,7 @@ namespace citacop
                     // Find closest color ONLY from reducedPalette
                     int closestIndex = FindClosestPaletteIndex(oldColor);
                     Color newColor = reducedPalette[closestIndex];
-
+                    newColor = Color.FromArgb(oldColor.A, newColor.R, newColor.G, newColor.B);
                     ditheredImage.SetPixel(x, y, newColor);
 
                     // Compute error
@@ -428,45 +423,40 @@ namespace citacop
 
             return ditheredImage;
         }
-        
 
-
-        private Bitmap ReduceColorsWithOrderedDithering(Bitmap image, int colorCount = 32)
+        private Bitmap ReduceColorsWithOrderedDithering(Bitmap image, int matrixSize = 2)
         {
             int width = image.Width;
             int height = image.Height;
 
-            // Generate a reduced palette
-            reducedPalette = getReducedPalette(image, colorCount);
             Bitmap ditheredImage = new Bitmap(width, height);
 
-            // 2×2 Bayer Matrix scaled between 0-1
-            double[,] BAYER_2x2 = {
-        { 0.0 / 4.0, 2.0 / 4.0 },
-        { 3.0 / 4.0, 1.0 / 4.0 }
-    };
+            // Choose the correct Bayer matrix
+            double[,] bayerMatrix = GetBayerMatrix(matrixSize);
             double ditheringStrength = 1.0;
+
             for (int y = 0; y < height; y++)
             {
                 for (int x = 0; x < width; x++)
                 {
                     Color oldColor = image.GetPixel(x, y);
-                   
-                        // Get Bayer matrix threshold
-                        double threshold = BAYER_2x2[y % 2, x % 2] * ditheringStrength;
 
-                        // Adjust each channel using the threshold
-                        int adjustedR = Clamp(oldColor.R + (int)(threshold * 64 - 32), 0, 255);
-                        int adjustedG = Clamp(oldColor.G + (int)(threshold * 64 - 32), 0, 255);
-                        int adjustedB = Clamp(oldColor.B + (int)(threshold * 64 - 32), 0, 255);
+                    // Get Bayer matrix threshold
+                    double threshold = bayerMatrix[y % matrixSize, x % matrixSize] * ditheringStrength;
 
-                        // Adjusted color after dithering
-                        Color ditheredColor = Color.FromArgb(adjustedR, adjustedG, adjustedB);
+                    // Adjust each channel using the threshold
+                    int adjustedR = Clamp(oldColor.R + (int)(threshold * 64 - 32), 0, 255);
+                    int adjustedG = Clamp(oldColor.G + (int)(threshold * 64 - 32), 0, 255);
+                    int adjustedB = Clamp(oldColor.B + (int)(threshold * 64 - 32), 0, 255);
 
-                        // Find the closest color in the reduced palette
-                        int closestIndex = FindClosestPaletteIndex(ditheredColor);
-                        Color newColor = reducedPalette[closestIndex];
-                   
+                    // Adjusted color after dithering
+                    Color ditheredColor = Color.FromArgb(adjustedR, adjustedG, adjustedB);
+
+                    // Find the closest color in the reduced palette
+                    int closestIndex = FindClosestPaletteIndex(ditheredColor);
+                    Color newColor = reducedPalette[closestIndex];
+                    newColor = Color.FromArgb(oldColor.A, newColor.R, newColor.G, newColor.B);
+
                     // Set the new color in the dithered image
                     ditheredImage.SetPixel(x, y, newColor);
                 }
@@ -476,73 +466,49 @@ namespace citacop
         }
 
 
+        private double[,] GetBayerMatrix(int size)
+        {
+            if (size == 4)
+            {
+                return new double[,] {
+            {  0.0 / 16.0,  8.0 / 16.0,  2.0 / 16.0, 10.0 / 16.0 },
+            { 12.0 / 16.0,  4.0 / 16.0, 14.0 / 16.0,  6.0 / 16.0 },
+            {  3.0 / 16.0, 11.0 / 16.0,  1.0 / 16.0,  9.0 / 16.0 },
+            { 15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0 }
+        };
+            }
+            else if (size == 8)
+            {
+                return new double[,] {
+            {  0.0 / 64.0, 32.0 / 64.0,  8.0 / 64.0, 40.0 / 64.0,  2.0 / 64.0, 34.0 / 64.0, 10.0 / 64.0, 42.0 / 64.0 },
+            { 48.0 / 64.0, 16.0 / 64.0, 56.0 / 64.0, 24.0 / 64.0, 50.0 / 64.0, 18.0 / 64.0, 58.0 / 64.0, 26.0 / 64.0 },
+            { 12.0 / 64.0, 44.0 / 64.0,  4.0 / 64.0, 36.0 / 64.0, 14.0 / 64.0, 46.0 / 64.0,  6.0 / 64.0, 38.0 / 64.0 },
+            { 60.0 / 64.0, 28.0 / 64.0, 52.0 / 64.0, 20.0 / 64.0, 62.0 / 64.0, 30.0 / 64.0, 54.0 / 64.0, 22.0 / 64.0 },
+            {  3.0 / 64.0, 35.0 / 64.0, 11.0 / 64.0, 43.0 / 64.0,  1.0 / 64.0, 33.0 / 64.0,  9.0 / 64.0, 41.0 / 64.0 },
+            { 51.0 / 64.0, 19.0 / 64.0, 59.0 / 64.0, 27.0 / 64.0, 49.0 / 64.0, 17.0 / 64.0, 57.0 / 64.0, 25.0 / 64.0 },
+            { 15.0 / 64.0, 47.0 / 64.0,  7.0 / 64.0, 39.0 / 64.0, 13.0 / 64.0, 45.0 / 64.0,  5.0 / 64.0, 37.0 / 64.0 },
+            { 63.0 / 64.0, 31.0 / 64.0, 55.0 / 64.0, 23.0 / 64.0, 61.0 / 64.0, 29.0 / 64.0, 53.0 / 64.0, 21.0 / 64.0 }
+        };
+            }
+            else // Default to 2x2
+            {
+                return new double[,] {
+            { 0.0 / 4.0, 2.0 / 4.0 },
+            { 3.0 / 4.0, 1.0 / 4.0 }
+        };
+            }
+        }
+
+
         private int Clamp(int value, int min, int max)
         {
             return Math.Max(min, Math.Min(value, max));
         }
 
-        private Bitmap ReduceColorsWithDitheringFullAmigaPalette(Bitmap image, int colorCount = 32)
-        {
-            int width = image.Width;
-            int height = image.Height;
-            Bitmap ditheredImage = new Bitmap(width, height);
-
-            // Floyd-Steinberg Error Diffusion Weights
-            double[][] errorDiffusion = {
-                new double[] { 0, 0, 7.0 / 16 },
-                new double[] { 3.0 / 16, 5.0 / 16, 1.0 / 16 }
-            };
-
-            // Convert image to array for processing
-            Color[,] imageData = new Color[width, height];
-            for (int y = 0; y < height; y++)
-                for (int x = 0; x < width; x++)
-                    imageData[x, y] = image.GetPixel(x, y);
-
-            // Process each pixel with dithering
-            for (int y = 0; y < height; y++)
-            {
-                UpdateLabel("Processing row: " + y.ToString());
-                Application.DoEvents();
-                for (int x = 0; x < width; x++)
-                {
-                    Color oldColor = imageData[x, y];
-                    int oldR = oldColor.R, oldG = oldColor.G, oldB = oldColor.B;
-
-                    //  Find closest Amiga palette color
-                    Color newColor = FindClosestAmigaColor(oldColor);
-                    ditheredImage.SetPixel(x, y, newColor);
-
-                    // Compute error
-                    int errR = oldR - newColor.R;
-                    int errG = oldG - newColor.G;
-                    int errB = oldB - newColor.B;
-
-                    // Distribute error to neighboring pixels
-                    for (int dy = 0; dy < 2; dy++)
-                    {
-                        for (int dx = -1; dx <= 1; dx++)
-                        {
-                            int nx = x + dx, ny = y + dy;
-                            if (nx >= 0 && nx < width && ny >= 0 && ny < height)
-                            {
-                                Color neighbor = imageData[nx, ny];
-                                int nr = Clamp(neighbor.R + (int)(errR * errorDiffusion[dy][dx + 1]), 0, 255);
-                                int ng = Clamp(neighbor.G + (int)(errG * errorDiffusion[dy][dx + 1]), 0, 255);
-                                int nb = Clamp(neighbor.B + (int)(errB * errorDiffusion[dy][dx + 1]), 0, 255);
-                                imageData[nx, ny] = Color.FromArgb(nr, ng, nb);
-                            }
-                        }
-                    }
-                }
-            }
-
-            return ditheredImage;
-        }
-
 
         private List<Color> KMeansCluster(List<Color> pixels, int clusterCount)
         {
+
             if (pixels.Count == 0) return new List<Color>();
 
             // .. Use K-Means++ initialization for better starting points
@@ -576,7 +542,7 @@ namespace citacop
                         Color newCenter = Color.FromArgb(r, g, b);
 
                         // .. Find closest Amiga palette color
-                        Color closestAmigaColor = FindClosestAmigaColor(newCenter);
+                        Color closestAmigaColor = FindClosest2DTableSlow(newCenter);
 
                         if (!newCenters.Contains(closestAmigaColor)) // Prevent duplicates
                         {
@@ -590,14 +556,14 @@ namespace citacop
                 while (newCenters.Count < clusterCount)
                 {
                     Color randomPixel = pixels[new Random().Next(pixels.Count)];
-                    Color closestAmigaColor = FindClosestAmigaColor(randomPixel);
+                    Color closestAmigaColor = FindClosest2DTableSlow(randomPixel);
                     if (!newCenters.Contains(closestAmigaColor))
                         newCenters.Add(closestAmigaColor);
                 }
 
                 centers = newCenters;
             }
-
+            UpdateLabel("Color Palette is ready.");
             return centers;
         }
 
@@ -623,19 +589,77 @@ namespace citacop
             return centers;
         }
 
-
-
-        private Color FindClosestColor(Color input, List<Color> palette)
-        {
-            return palette.OrderBy(c => ColorDistance(input, c)).First();
-        }
         private double ColorDistance(Color c1, Color c2)
         {
             return Math.Sqrt(Math.Pow(c1.R - c2.R, 2) + Math.Pow(c1.G - c2.G, 2) + Math.Pow(c1.B - c2.B, 2));
         }
 
 
-        private Color FindClosestAmigaColor(Color inputColor)
+        private Color FindClosestColorInList(Color input, List<Color> palette)
+        {
+            return palette.OrderBy(c => ColorDistance(input, c)).First();
+        }
+
+        private int FindClosestPaletteIndex(Color inputColor)
+        {
+            int bestIndex = 0;
+            double minDistance = double.MaxValue;
+
+            for (int i = 0; i < reducedPalette.Count; i++) // .. Artık reducedPalette içinde arama yapıyoruz
+            {
+                Color paletteColor = reducedPalette[i];
+                double distance = ColorDistance(inputColor, paletteColor);
+
+                if (distance < minDistance)
+                {
+                    minDistance = distance;
+                    bestIndex = i;
+                }
+            }
+            return bestIndex;
+        }
+
+        private Color FindClosestAmigaColorNolookup(Color inputColor)
+        {
+            // Convert 8-bit RGB to 4-bit Amiga color space
+            int amigaR = inputColor.R / 16;
+            int amigaG = inputColor.G / 16;
+            int amigaB = inputColor.B / 16;
+            //return Color.FromArgb(inputColor.A, amigaR*16, amigaG*16, amigaB*16);
+
+            // Convert back to 8-bit using (x << 4) | x to expand properly
+            int fixedR = (amigaR << 4) | amigaR;
+            int fixedG = (amigaG << 4) | amigaG;
+            int fixedB = (amigaB << 4) | amigaB;
+
+            return Color.FromArgb(inputColor.A, fixedR, fixedG, fixedB);
+        }
+
+        // Optimized FindClosestAmigaColor
+        private Color FindClosestFrom1DTableParallel(Color inputColor)
+        {
+
+            Color bestMatch = Color.Black;
+            int minDistance = int.MaxValue;
+
+            Parallel.ForEach(amigaPaletteList, amigaColor =>
+            {
+                int distance =
+                    (inputColor.R - amigaColor.R) * (inputColor.R - amigaColor.R) +
+                    (inputColor.G - amigaColor.G) * (inputColor.G - amigaColor.G) +
+                    (inputColor.B - amigaColor.B) * (inputColor.B - amigaColor.B);
+
+                if (distance < minDistance)
+                {
+                    minDistance = distance;
+                    bestMatch = amigaColor;
+                }
+            });
+
+            return bestMatch;
+        }
+
+        private Color FindClosest2DTableSlow(Color inputColor)
         {
             Color bestMatch = Color.Black;
             double minDistance = double.MaxValue;
@@ -662,6 +686,8 @@ namespace citacop
 
             return bestMatch;
         }
+
+
 
         private void UpdateLabel(string text, Color col)
         {
@@ -693,7 +719,7 @@ namespace citacop
             string mode = (solidToolStripMenuItem.Checked ? "S" : floydSteinbergToolStripMenuItem.Checked ? "F" : "O");
             string display = medResToolStripMenuItem.Checked ? "Medres " : "";
             display += interlacedToolStripMenuItem.Checked ? "Laced" : "";
-            toolStripStatusLabel2.Text = "[" + pictureBox1.Image.Width.ToString() + "x" + pictureBox1.Image.Height.ToString() + "-" + mode + ">" + scalew.ToString() + "x" + scaleh.ToString() + "@" + tag + "] " + display;
+            if (pictureBox1.Image != null) toolStripStatusLabel2.Text = "[" + pictureBox1.Image.Width.ToString() + "x" + pictureBox1.Image.Height.ToString() + "-" + mode + ">" + scalew.ToString() + "x" + scaleh.ToString() + "@" + tag + "] " + display;
 
         }
 
@@ -714,8 +740,15 @@ namespace citacop
 
         }
 
-        private void reduceNow(int colorcount, int dither)
+        private void reduceNow(int colorcount, int dither, bool paletteOnly = false)
         {
+            bool isEHB = false;
+            if (colorcount == 64)
+            {
+                isEHB = true;
+                colorcount = 32;
+            }
+
             if (isQuantizing)
             {
                 UpdateLabel("Quantization is already in progress...", Color.Red);
@@ -738,21 +771,64 @@ namespace citacop
 
                     int targetColors = Math.Min(colorcount, uniqueColors.Count); // 32'den az renk varsa, mevcut olanları kullan
 
+                    if (paletteOnly) { reducedPalette = getReducedPalette(inputImage, targetColors); isQuantizing = false; return; } //only generate palette and exit.
+
+                    if (isPaletteLocked && reducedPalette.Count() == targetColors)
+                    {
+                        UpdateLabel("Using locked palette.");
+                    }
+                    else if (isPaletteLocked)
+                    {
+                        UpdateLabel("Color count mismatch. UNLOCK PALETTE FIRST: PRESS F3", Color.Red);
+                        return;
+
+                    }
+                    else //generate new palette.
+                    {
+                        reducedPalette = getReducedPalette(inputImage, targetColors);
+                    }
+
+
+
+                    if (isEHB)
+                    {
+                        List<Color> ehbPalette = new List<Color>(reducedPalette); // Copy original palette
+
+                        for (int i = 0; i < reducedPalette.Count; i++)
+                        {
+                            Color original = reducedPalette[i];
+
+                            // Generate half-bright color (divide RGB values by 2)
+                            Color halfBright = Color.FromArgb(
+                                original.A,
+                                original.R / 2,
+                                original.G / 2,
+                                original.B / 2
+                            );
+
+                            ehbPalette.Add(halfBright); // Append to palette
+                        }
+
+                        reducedPalette = ehbPalette;
+                    }
+
+
                     Bitmap reducedImage;
                     switch (dither)
                     {
 
                         case 2:
                             UpdateLabel("Actual Color count:" + uniqueColors.Count.ToString() + ". Floyd dithering...");
-                            reducedImage = ReduceColorsWithDithering(inputImage, targetColors);
+                            reducedImage = ReduceColorsWithDithering(inputImage);
                             break;
                         case 3:
+                            int bayersize = (ordered8x8ToolStripMenuItem.Checked ? 8 : ordered4x4ToolStripMenuItem.Checked ? 4 : 2);
                             UpdateLabel("Actual Color count:" + uniqueColors.Count.ToString() + ". Ordered dithering...");
-                            reducedImage = ReduceColorsWithOrderedDithering(inputImage, targetColors);
+                            reducedImage = ReduceColorsWithOrderedDithering(inputImage, bayersize);
                             break;
                         default:
                             UpdateLabel("Actual Color count:" + uniqueColors.Count.ToString() + ". Processing without dithering...");
-                            reducedImage = ReduceColors(inputImage, targetColors);
+                            reducedImage = ReduceColors(inputImage);
                             break;
 
                     }
@@ -786,6 +862,120 @@ namespace citacop
 
 
         private void ShowPalette()
+        {
+            if (reducedPalette == null || reducedPalette.Count == 0)
+            {
+                string colorCountStr = CheckColorSelection(colorReduceSettingToolStripMenuItem);
+                if (int.TryParse(colorCountStr, out int colorCount) && colorCount > 0)
+                {
+                    reducedPalette = GenerateDefaultPalette(colorCount);
+                }
+                else
+                {
+                    UpdateLabel("No valid palette available.");
+                    return;
+                }
+            }
+
+            if (paletteWindow != null && !paletteWindow.IsDisposed)
+            {
+                UpdatePaletteImage();
+                paletteWindow.BringToFront();
+                return;
+            }
+
+            paletteWindow = new Form
+            {
+                Text = "Palette Preview",
+                Size = new Size(250, 140), // Increased size to fit checkbox
+                FormBorderStyle = FormBorderStyle.SizableToolWindow,
+                TopMost = true
+            };
+
+            int offsetX = this.Location.X + this.Width - paletteWindow.Width - 20;
+            int offsetY = this.Location.Y + 40;
+            paletteWindow.StartPosition = FormStartPosition.Manual;
+            paletteWindow.Location = new Point(offsetX, offsetY);
+
+            PictureBox paletteBox = new PictureBox
+            {
+                Size = new Size(210, 50),
+                Location = new Point(10, 10),
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            paletteBox.Image = GeneratePaletteBitmap();
+            paletteBox.MouseClick += PaletteBox_MouseClick; // Enable color editing
+
+            // Lock Palette Checkbox
+            CheckBox lockCheckBox = new CheckBox
+            {
+                Text = "Lock Palette",
+                Checked = isPaletteLocked,
+                Location = new Point(10, 70),
+                AutoSize = true
+            };
+            lockCheckBox.CheckedChanged += (s, e) => isPaletteLocked = lockCheckBox.Checked;
+
+            paletteWindow.Controls.Add(paletteBox);
+            paletteWindow.Controls.Add(lockCheckBox); // Add the checkbox
+
+            paletteWindow.FormClosed += (s, e) => paletteWindow = null;
+            paletteWindow.Show();
+        }
+
+
+        private List<Color> GenerateDefaultPalette(int colorCount)
+        {
+            List<Color> palette = new List<Color>();
+
+            for (int i = 0; i < colorCount; i++)
+            {
+                Random n = new Random();
+                int r = ((n.Next(255)) & 0xF0); // Scale to 4-bit Amiga range
+                int g = ((n.Next(255)) & 0xF0); //>> 1;
+                int b = ((n.Next(255)) & 0xF0);// >> 2;
+
+                palette.Add(Color.FromArgb(r | (r >> 4), g | (g >> 4), b | (b >> 4))); // Expand 4-bit to 8-bit
+            }
+
+            return palette;
+        }
+
+
+        private void PaletteBox_MouseClick(object sender, MouseEventArgs e)
+        {
+            if (reducedPalette == null || reducedPalette.Count == 0) return;
+
+            PictureBox paletteBox = sender as PictureBox;
+            if (paletteBox == null || paletteBox.Image == null) return;
+
+            int colorsPerRow = 8; // Fixed columns
+            int boxWidth = paletteBox.Width / colorsPerRow;
+            int boxHeight = paletteBox.Height / ((reducedPalette.Count + colorsPerRow - 1) / colorsPerRow); // Adjust rows dynamically
+
+            int col = e.X / boxWidth; // Column index
+            int row = e.Y / boxHeight; // Row index
+            int colorIndex = row * colorsPerRow + col; // Compute color index
+
+            if (colorIndex >= reducedPalette.Count) return; // Out of range check
+
+            using (ColorDialog colorDialog = new ColorDialog())
+            {
+                colorDialog.Color = reducedPalette[colorIndex]; // Start with current color
+                colorDialog.FullOpen = true;
+                colorDialog.AnyColor = true;
+
+                if (colorDialog.ShowDialog() == DialogResult.OK)
+                {
+                    reducedPalette[colorIndex] = colorDialog.Color; // Update palette color
+                    paletteBox.Image = GeneratePaletteBitmap(); // Refresh palette display
+                }
+            }
+        }
+
+
+        private void ShowPalette2()
         {
             if (reducedPalette == null || reducedPalette.Count == 0)
             {
@@ -844,7 +1034,9 @@ namespace citacop
                 {
                     if (control is PictureBox pictureBox)
                     {
+                        if (pictureBox.Image != null) { pictureBox.Image.Dispose(); }
                         pictureBox.Image = GeneratePaletteBitmap();
+
                         pictureBox.Refresh();
                         break;
                     }
@@ -915,8 +1107,9 @@ namespace citacop
 
 
 
-        private void SaveAsILBM(Bitmap image, string filePath, List<Color> palette, int bitplanes, bool useCompression = false)
+        private void SaveAsILBM(Bitmap image, string filePath, List<Color> palette, int bitplanes, bool savePalette = false)
         {
+            bool useCompression = false; //not working :D
             using (FileStream fs = new FileStream(filePath, FileMode.Create))
             using (BinaryWriter writer = new BinaryWriter(fs))
             {
@@ -944,10 +1137,14 @@ namespace citacop
                 WriteBigEndian(writer, (short)image.Width);
                 WriteBigEndian(writer, (short)image.Height);
 
-                //CMAP Chunk (Renk Paleti)
+                // CMAP Chunk (Color Palette)
                 writer.Write(Encoding.ASCII.GetBytes("CMAP"));
-                WriteBigEndian(writer, (uint)(palette.Count * 3)); // Palet boyutu
-                foreach (var color in palette)
+
+                // Write only the first 32 colors in EHB mode, full palette otherwise
+                int colorCount = (bitplanes < 6) ? palette.Count : 32;
+                WriteBigEndian(writer, (uint)(colorCount * 3)); // Palette size
+
+                foreach (var color in palette.Take(colorCount))
                 {
                     writer.Write(color.R);
                     writer.Write(color.G);
@@ -955,27 +1152,32 @@ namespace citacop
                 }
 
 
+
                 //CAMG Chunk (Ekran Modu)
                 writer.Write(Encoding.ASCII.GetBytes("CAMG")); // Chunk ID
                 WriteBigEndian(writer, (uint)4); // Chunk boyutu (4 bayt)
                 WriteBigEndian(writer, GetCAMGMode()); // Correct CAMG mode
+                long bodySizePos= fs.Position;
+                if (!savePalette)
+                {
+                    //BODY Chunk (Bitmap Verisi)
+                    writer.Write(Encoding.ASCII.GetBytes("BODY"));
+                    bodySizePos = fs.Position;
+                    WriteBigEndian(writer, (uint)0); // Geçici olarak 0 yaz
 
-
-                //BODY Chunk (Bitmap Verisi)
-                writer.Write(Encoding.ASCII.GetBytes("BODY"));
-                long bodySizePos = fs.Position;
-                WriteBigEndian(writer, (uint)0); // Geçici olarak 0 yaz
-
-                byte[] bitmapData = ConvertBitmapToPlanar(image, bitplanes);
-                byte[] finalData = useCompression ? ByteRun1Compress(bitmapData) : bitmapData;
-                writer.Write(finalData);
-
+                    byte[] bitmapData = ConvertBitmapToPlanar(image, bitplanes);
+                    byte[] finalData = useCompression ? ByteRun1Compress(bitmapData) : bitmapData;
+                    writer.Write(finalData);
+                }
                 // Güncellenmiş Boyutları Yaz (FORM ve BODY)
                 long endPos = fs.Position;
                 fs.Seek(formSizePos, SeekOrigin.Begin);
                 WriteBigEndian(writer, (uint)(endPos - 8)); // FORM toplam boyut
-                fs.Seek(bodySizePos, SeekOrigin.Begin);
-                WriteBigEndian(writer, (uint)(endPos - (bodySizePos + 4))); // BODY boyutu
+                if (!savePalette)
+                {
+                    fs.Seek(bodySizePos, SeekOrigin.Begin);
+                    WriteBigEndian(writer, (uint)(endPos - (bodySizePos + 4))); // BODY boyutu
+                }
             }
         }
 
@@ -1025,13 +1227,59 @@ namespace citacop
             if (interlacedToolStripMenuItem.Checked)
                 camgMode |= 0x0004; // Interlaced (LACE)
 
-            if (extraHalfBriteToolStripMenuItem.Checked && !medResToolStripMenuItem.Checked)
+            if (reducedPalette.Count() == 64)
                 camgMode |= 0x0080; // Extra Half-Brite (EHB)
 
             return camgMode;
         }
 
         private byte[] ConvertBitmapToPlanar(Bitmap image, int bitplanes)
+        {
+            int widthBytes = ((image.Width + 15) / 16) * 2; // 16-bit word align
+            int rowSize = bitplanes * widthBytes;
+            byte[] output = new byte[rowSize * image.Height];
+
+            for (int y = 0; y < image.Height; y++)
+            {
+                byte[] rowData = new byte[rowSize];
+                UpdateLabel("Processing row: " + y.ToString());
+                Application.DoEvents();
+
+                for (int x = 0; x < image.Width; x++)
+                {
+                    // Get the closest palette index
+                    Color pixel = image.GetPixel(x, y);
+                    int colorIndex = FindClosestPaletteIndex(pixel);
+
+                    int byteOffset = x / 8;
+                    int bitPosition = 7 - (x % 8);
+
+                    // If using EHB mode (64 colors, 6 bitplanes)
+                    if (bitplanes == 6 && colorIndex > 31)
+                    {
+                        colorIndex -= 32; // Reduce to base 32
+                        rowData[(5 * widthBytes) + byteOffset] |= (byte)(1 << bitPosition); // Set 6th bitplane (index 5)
+                    }
+
+                    // Process 5 main bitplanes (same for normal 32 or EHB mode)
+                    for (int plane = 0; plane < Math.Min(bitplanes, 5); plane++)
+                    {
+                        if ((colorIndex & (1 << plane)) != 0)
+                        {
+                            rowData[(plane * widthBytes) + byteOffset] |= (byte)(1 << bitPosition);
+                        }
+                    }
+                }
+
+                // Copy row data to output buffer
+                Array.Copy(rowData, 0, output, y * rowSize, rowSize);
+            }
+
+            return output;
+        }
+
+
+        private byte[] ConvertBitmapToPlanar32(Bitmap image, int bitplanes)
         {
             int widthBytes = ((image.Width + 15) / 16) * 2; // 16-bit word align
             int rowSize = bitplanes * widthBytes;
@@ -1068,24 +1316,7 @@ namespace citacop
         }
 
 
-        private int FindClosestPaletteIndex(Color inputColor)
-        {
-            int bestIndex = 0;
-            double minDistance = double.MaxValue;
 
-            for (int i = 0; i < reducedPalette.Count; i++) // .. Artık reducedPalette içinde arama yapıyoruz
-            {
-                Color paletteColor = reducedPalette[i];
-                double distance = ColorDistance(inputColor, paletteColor);
-
-                if (distance < minDistance)
-                {
-                    minDistance = distance;
-                    bestIndex = i;
-                }
-            }
-            return bestIndex;
-        }
 
         private void menuStrip1_ItemClicked(object sender, ToolStripItemClickedEventArgs e)
         {
@@ -1095,7 +1326,7 @@ namespace citacop
         private void openImageToolStripMenuItem_Click(object sender, EventArgs e)
         {
             LoadImage();
-            
+
         }
 
         private void saveAsToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1541,7 +1772,7 @@ namespace citacop
                 if (checkBox1.Checked)
                 {
                     float f = Math.Abs(((float)scw / sch) - imageAspectRatio);
-                    
+
                     if (f < 0.01)
                     {
                         scaleh = sch;
@@ -1677,7 +1908,7 @@ namespace citacop
         {
             if (backupImage != null)
             {
-                
+
                 pictureBox1.Image = new Bitmap(backupImage);
                 pictureBox1.Refresh();
                 zoomFactor = 1.0f;
@@ -1801,7 +2032,7 @@ namespace citacop
 
         private void showPaletteToolStripMenuItem_Click_1(object sender, EventArgs e)
         {
-            if (reducedPalette.Count > 0) ShowPalette(); else UpdateLabel("Create an amiga image first!", Color.Red);
+            ShowPalette();
         }
 
         private void pictureBox1_MouseDown(object sender, MouseEventArgs e)
@@ -1868,6 +2099,263 @@ namespace citacop
             isDragging = false;
         }
 
+        private void ordered4x4ToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            if (sender is ToolStripMenuItem item)
+            {
+                CheckMenuItem(ditheringSettingToolStripMenuItem, item);
+            }
+            UpdateInfo();
+        }
+
+        private void ordered8x8ToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            if (sender is ToolStripMenuItem item)
+            {
+                CheckMenuItem(ditheringSettingToolStripMenuItem, item);
+            }
+            UpdateInfo();
+        }
+
+        private void toolStripMenuItem5_Click(object sender, EventArgs e)
+        {
+            if (sender is ToolStripMenuItem item)
+            {
+                CheckMenuItem(colorReduceSettingToolStripMenuItem, item);
+
+            }
+            UpdateInfo();
+        }
+
+        private void toolStripMenuItem10_Click(object sender, EventArgs e)
+        {
+            //generate palette only.
+            int mode = (solidToolStripMenuItem.Checked ? 1 : floydSteinbergToolStripMenuItem.Checked ? 2 : 3);
+            string tag = CheckColorSelection(colorReduceSettingToolStripMenuItem);
+            if (tag != string.Empty)
+            {
+                button2.Visible = true;
+                reduceNow(Convert.ToInt32(tag), mode, true);
+                while (isQuantizing)
+                {
+                    Application.DoEvents();
+                }
+                button2.Visible = false;
+                isQuantizing = false;
+                ShowPalette();
+            }
+        }
+
+        private void toolStripMenuItem11_Click(object sender, EventArgs e)
+        {
+            SortPaletteByHue();
+            ShowPalette();
+        }
+        private void SortPaletteByHue()
+        {
+            if (reducedPalette == null || reducedPalette.Count == 64 || reducedPalette.Count == 0) return;
+
+            reducedPalette = reducedPalette
+                .OrderBy(c => c.GetHue())      // 1️⃣ Sort by Hue (0-360 degrees)
+                .ThenBy(c => c.GetSaturation()) // 2️⃣ Sort by Saturation (0-1)
+                .ThenBy(c => c.GetBrightness()) // 3️⃣ Sort by Brightness (0-1)
+                .ToList();
+        }
+
+        private void toolStripMenuItem13_Click(object sender, EventArgs e)
+        {
+            //Load Palette
+
+            using (OpenFileDialog openFileDialog = new OpenFileDialog())
+            {
+                openFileDialog.Filter = "Palette Files|*.set;*.col;*.act;*.pal|Adobe Color Table (*.act)|*.act|Personal Paint Color Set (*.col)|*.col|Deluxe Paint Palette Set(*.set)|*.set|Amiga Palette(*.pal)|*.pal|All Files|*.*";
+                openFileDialog.Title = "Load Palette";
+
+                if (openFileDialog.ShowDialog() == DialogResult.OK)
+                {
+                    string extension = Path.GetExtension(openFileDialog.FileName).ToLower();
+                    if (extension == ".act")
+                    {
+                        LoadPaletteFromACT(openFileDialog.FileName);
+                    }
+                    else if (extension == ".pal" || (extension == ".set") || (extension == ".col"))
+                    {
+                        LoadPaletteFromILBM(openFileDialog.FileName);
+                    }
+                }
+            }
+        }
+
+        private void toolStripMenuItem12_Click(object sender, EventArgs e)
+        {
+            //save palette
+            using (SaveFileDialog saveFileDialog = new SaveFileDialog())
+            {
+                saveFileDialog.Filter = "Adobe Color Table (*.act)|*.act|Personal Paint Color Set (*.col)|*.col|Deluxe Paint Palette Set(*.set)|*.set|Amiga Palette(*.pal)|*.pal";
+                saveFileDialog.Title = "Save Palette";
+                saveFileDialog.FileName = "palette";
+                
+                if (saveFileDialog.ShowDialog() == DialogResult.OK)
+                {
+                    string extension = Path.GetExtension(saveFileDialog.FileName).ToLower();
+
+                    if (extension == ".act")
+                    {
+                        SavePaletteAsACT(saveFileDialog.FileName);
+                    } 
+                    else if (extension == ".pal" || (extension == ".set") || (extension == ".col"))
+                    {
+                        int bitplanes = (int)Math.Ceiling(Math.Log2(reducedPalette.Count));  // 16 renk için 4 bit, 32 renk için 5 bit
+                        SaveAsILBM(new Bitmap(1,1), saveFileDialog.FileName, reducedPalette, bitplanes, true);
+
+                    }
+                }
+            }
+
+        }
+
+        private void SavePaletteAsACT(string filePath)
+        {
+            if (reducedPalette == null || reducedPalette.Count == 0)
+            {
+                UpdateLabel("No palette to save!");
+                return;
+            }
+
+            using (FileStream fs = new FileStream(filePath, FileMode.Create, FileAccess.Write))
+            using (BinaryWriter writer = new BinaryWriter(fs))
+            {
+                int maxColors = 256; // ACT format supports up to 256 colors
+                int paletteSize = Math.Min(reducedPalette.Count, maxColors);
+
+                // Write the palette colors (RGB triplets)
+                for (int i = 0; i < paletteSize; i++)
+                {
+                    Color color = reducedPalette[i];
+                    writer.Write(color.R);
+                    writer.Write(color.G);
+                    writer.Write(color.B);
+                }
+
+                // Fill remaining slots with black (0x00, 0x00, 0x00)
+                for (int i = paletteSize; i < maxColors; i++)
+                {
+                    writer.Write((byte)0x00); // R
+                    writer.Write((byte)0x00); // G
+                    writer.Write((byte)0x00); // B
+                }
+            }
+
+            UpdateLabel($"Palette saved as ACT: {filePath}");
+        }
+
+        private void LoadPaletteFromACT(string filePath)
+        {
+            if (!File.Exists(filePath))
+            {
+                UpdateLabel("File not found!");
+                return;
+            }
+
+            List<Color> loadedPalette = new List<Color>();
+
+            using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+            using (BinaryReader reader = new BinaryReader(fs))
+            {
+                int colorCount = (int)(fs.Length / 3); // Each color is 3 bytes (RGB)
+                if (colorCount > 256) colorCount = 256; // ACT files have a max of 256 colors
+
+                for (int i = 0; i < colorCount; i++)
+                {
+                    int r = reader.ReadByte();
+                    int g = reader.ReadByte();
+                    int b = reader.ReadByte();
+                    loadedPalette.Add(Color.FromArgb(r, g, b));
+                }
+            }
+
+            // 🔹 Remove trailing black colors (0,0,0) at the end of the palette
+            for (int i = loadedPalette.Count - 1; i >= 0; i--)
+            {
+                if (loadedPalette[i].R == 0 && loadedPalette[i].G == 0 && loadedPalette[i].B == 0)
+                {
+                    loadedPalette.RemoveAt(i);
+                }
+                else
+                {
+                    break; // Stop when a non-black color is found
+                }
+            }
+
+            // 🔹 Find the nearest valid palette size (2, 4, 8, 16, 32, 64, 128, or 256)
+            int[] validSizes = { 2, 4, 8, 16, 32 };
+            int nearestSize = validSizes.FirstOrDefault(size => size >= loadedPalette.Count);
+
+            // 🔹 Fill up the palette with black if needed
+            while (loadedPalette.Count < nearestSize)
+            {
+                loadedPalette.Add(Color.Black);
+            }
+
+            reducedPalette = loadedPalette; // Final updated palette
+
+            UpdateLabel($"Palette loaded from ACT: {filePath} ({reducedPalette.Count} colors)");
+            ShowPalette(); // Update the palette window
+        }
+
+
+        private void LoadPaletteFromILBM(string filePath)
+        {
+            if (!File.Exists(filePath))
+            {
+                UpdateLabel("File not found!");
+                return;
+            }
+
+            using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+            using (BinaryReader reader = new BinaryReader(fs))
+            {
+                while (fs.Position < fs.Length)
+                {
+                    string chunkID = Encoding.ASCII.GetString(reader.ReadBytes(4)); // Read chunk name
+                    
+
+                    if (chunkID == "CMAP") // Found CMAP chunk
+                    {
+                        int chunkSize = ReadBigEndianInt(reader); // Read chunk size
+                        int colorCount = chunkSize / 3; // Each color is 3 bytes (R, G, B)
+                        List<Color> palette = new List<Color>();
+
+                        for (int i = 0; i < colorCount; i++)
+                        {
+                            int r = reader.ReadByte();
+                            int g = reader.ReadByte();
+                            int b = reader.ReadByte();
+                            palette.Add(Color.FromArgb(r, g, b));
+                        }
+
+                        reducedPalette = palette;
+                        UpdateLabel($"Palette loaded from ILBM: {colorCount} colors");
+                        ShowPalette();
+                        return;
+                    }
+                    else
+                    {
+                        
+                        fs.Position -= 3;
+
+                    }
+                }
+            }
+
+            UpdateLabel("CMAP chunk not found in ILBM file.");
+        }
+
+        private int ReadBigEndianInt(BinaryReader reader)
+        {
+            byte[] bytes = reader.ReadBytes(4);
+            return (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+        }
 
     }
 }
