@@ -17,7 +17,14 @@ Supports Amiga Low-Res, Med-Res and Laced saving. Aspect ratio compansation when
 - 📏 **Flexible Image Resizing and Cropping**: Resize or crop images dynamically with aspect ratio locking.  
 - 🔄 **Undo/Redo States**: Save and revert to previous states for non-destructive editing.  
 - 🖌️ **Palette Visualization**: Preview reduced palettes in a dedicated floating window.  
-- 💾 **Export Options**: Save images in multiple formats, including BMP, JPG, PNG, and Amiga IFF (ILBM).  
+- 💾 **Export Options**: Save images in multiple formats, including BMP, JPG, PNG, and Amiga IFF (ILBM).
+
+## V1.1: Added functions:
+- Load/Save palette files of Deluxe Paint 4 (SET), Personal Paint (PAL, COL), ILBM CMAP chunks (IFF), Adobe Color Table (ACT)
+- Can edit palette
+- Lock a palette and apply to any image
+- 64color EHB is now supported. (Still no HAM though)
+- New Dithering Modes
 
 ## Supported Platforms  
 Windows (built with .NET Framework/Windows Forms)
